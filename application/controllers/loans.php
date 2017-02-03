@@ -1,0 +1,1305 @@
+<?php if ( ! defined('BASEPATH')) exit('No direct script access allowed');
+
+class Loans extends MY_Controller {
+	private $data = array();
+	public $javascripts = array(
+		'js/plugins/datatables/jquery.dataTables.js', 
+		'js/plugins/datatables/fnReloadAjax.js', 
+		'js/plugins/datatables/dataTables.bootstrap.js', 
+		'js/jquery.numeric.min.js', 
+		'js/bootbox.min.js', 
+		'js/pages-js/loans.js'
+	);
+	public $css = array('css/datatables/dataTables.bootstrap.css', 'css/pages-css/loans.css');
+	private $configs = array();
+	
+	public function __construct(){
+		parent::__construct();
+		
+		$this->load->model('configs_model', 'conf');
+		
+		//temporary. iyo ini ang igoglobal pag login pa lang kan sarong emple
+		$this->configs = $this->conf->get_by_business_id('glc');
+		
+	}
+	
+	public function index()
+	{
+		$this->load->helper('template');
+		$this->data = array(
+			"payment_mode" => $this->get_payment_mode()	
+		);
+		render_page('loans_page', $this->data);
+	}
+	
+	
+	public function get(){
+		$this->load->model('customer_loan_model', 'loans');
+		$result = $this->loans->get();
+		
+		//--compose array for table
+		$loan_cycle_array = array();
+		$cycle_counter = 1;
+		foreach($result as $val){
+			if(array_key_exists($val['account_no'], $loan_cycle_array)){
+				$cycle_counter++;
+			}
+			$loan_cycle_array[$val['account_no']] = $cycle_counter;
+		}
+		
+		$customer_data = array();
+		$amortization = 0;
+		foreach($result as $val){
+						
+			if($val['loan_status']==1 && $val['application_status']==2){
+				$pep = "NO";
+				
+				$amortization = $val['amortization'];
+				
+				if($val['pep_status']==1){
+					$pep = "YES";
+					$amortization = $val['pep_amort'];
+				}
+				
+				$customer_data[] = array(
+						"id" => $val['loan_id'],
+						"mopid" => $val['mopid'],
+						"account_no" => $val['account_no'],
+						"name" => $val['name'],
+						"loan_amount" => $val['loan_amount'],
+						"mode_of_payment" => $val['mode_of_payment'],
+						"loan_term_duration" => $val['loan_term_duration'],
+						"interest_pct" => $val['interest_pct'] . "%",
+						"interest_amount" => $val['interest_amount'],
+						"service_fee_pct" => $val['service_fee_pct'] . "%",
+						"service_fee_amount" => $val['service_fee_amount'],
+						"loan_proceeds" => $val['loan_proceeds'],
+						"amortization" => $amortization,
+						"date_released" => $val['date_released'],
+						"maturity_date" => $val['maturity_date'],
+						"customer_id" => $val['customer_id'],
+						"loan_cycle" => $loan_cycle_array[$val['account_no']],
+						"pep" => $pep
+				);
+			}
+			
+			
+		}
+		
+		$data = array();
+		foreach($customer_data as $val){
+			
+			$row = array();	
+			
+			foreach($val as $k => $v){
+				$row[] = $v;
+			}
+			
+			$data[] = $row;
+		}
+		
+		$return = array(
+			"sEcho" => count($data),
+    		"iTotalRecords" => count($data),
+    		"iTotalDisplayRecords" =>  count($data),
+			"aaData" => $data
+		);
+		
+		
+		echo json_encode($return);
+	}
+	
+	//for datatable 1.10.4
+	public function get1(){
+		$this->db->select('c.id, c.account_no, CONCAT(c.surname,", ", c.firstname, " ", c.middlename) as account_name, l.loan_amount, l.loan_proceeds, l.date_released, l.maturity_date, l.daily_amort', FALSE);
+		$this->db->from('customers c');
+		$this->db->join('customers_loan l', 'l.customer_id=c.id', 'left');
+		$query = $this->db->get();
+		
+		$result = $query->result_array();
+		
+		$data = array();
+				
+		foreach($result as $val){
+			$val['action'] = "";
+			$data[] = $val;
+		}
+		
+		echo json_encode(array('data' => $data));
+	}
+	
+	public function get_customer_by_id(){
+		$post = $this->input->post(NULL, TRUE);
+		$this->load->model('customers_model', 'customers');
+		$this->load->model('customers_references_model', 'customers_references');
+		
+		$this->customers->id = $post['id'];
+		$this->customers_references->id = $post['id'];
+		
+		$customers_data = $this->customers->get_by_id();
+		$customers_references_data = $this->customers_references->get_by_customer_id();
+		
+		$result = array(
+			"customers_data" => $customers_data,
+			"customers_references_data" => $customers_references_data 
+		);
+		
+		echo json_encode($result);
+	}
+	
+	public function payments(){
+		$post = $this->input->post(NULL, TRUE);
+		$this->load->model('loan_payments_model', 'loan_payments');
+		$this->load->model('loan_amort_dates_model', 'lad');
+		$this->load->library('Loan');
+		
+		$check_payment_by_date = array();
+		$update_loan_payments_data = array();
+		if($post){
+			
+			$check_payment_by_date = $this->loan_payments->get_payments_by_date_and_id($post['loan_id'], $post['payment_date']);
+			if(count($check_payment_by_date)==0){
+				$post['approved'] = '1';
+				$this->loan_payments->data = $post;
+				$this->loan_payments->create();
+			}
+			else{
+				$update_loan_payments_data = array(
+					"amount" => $post['amount'],
+					"approved"	=> '1'
+				);
+				$this->loan_payments->data = $update_loan_payments_data;
+				$this->loan_payments->loan_id = $post['loan_id'];
+				$this->loan_payments->payment_date = $post['payment_date'];
+				$this->loan_payments->update_by_loanid_and_date();
+				
+			}
+			
+			$loan_bal_payments = $this->loan->get_loan_balance_and_total_payments($post['loan_id']);
+			
+			if($loan_bal_payments['loan_balance']<=0){
+				$loan_status = 0;
+				$date_completed = date('Y-m-d');
+			}
+			else{
+				$loan_status = 1;
+				$date_completed = '0000-00-00';
+			}
+			
+			$cl_data = array(
+					"total_payments" => $loan_bal_payments['total_payments'],
+					"loan_balance" => $loan_bal_payments['loan_balance'],
+					"status" => $loan_status,
+					"date_completed" => $date_completed
+			);
+			
+			
+			
+			$this->db->update('customers_loan', $cl_data, array('id' => $post['loan_id']));
+			
+			$this->loan->validate_update_loan($post['loan_id']);
+		}
+		
+		$return = array(
+				"success"=> TRUE
+		);
+		
+		echo json_encode($return);
+		
+	}
+	
+	public function get_loan_payments(){
+		$post = $this->input->post(NULL, TRUE);
+		$this->load->model('loan_payments_model', 'lpm');
+		$this->load->model('customer_loan_model', 'clm');
+		$this->load->library('Loan');
+		
+		$customer_loan = $this->clm->get_by_loan_id($post['loan_id']);
+		$loan_payments = $this->lpm->get_payments_by_id($post['loan_id'], TRUE);
+		
+		$payments_and_balance =  $this->loan->get_loan_balance_and_total_payments($post['loan_id']);
+		
+		$mode_of_payment_id = $customer_loan[0]['mopid'];
+		$total_loan_amount = $customer_loan[0]['loan_amount'];
+		$date_released = $customer_loan[0]['date_released'];
+		$maturity_date = $customer_loan[0]['maturity_date'];
+		$amortization = $customer_loan[0]['amortization'];
+		$pep_status = $customer_loan[0]['pep_status'];
+		$pep_startdate = $customer_loan[0]['pep_startdate'] != "0000-00-00" ? $customer_loan[0]['pep_startdate'] : "";
+		$pep_enddate = $customer_loan[0]['pep_enddate'] != "0000-00-00" ? $customer_loan[0]['pep_enddate'] : "";
+		$pep_amortization = $customer_loan[0]['pep_amort'];
+		$loan_term_duration = $customer_loan[0]['loan_term_duration'];
+		/* $total_balance = $customer_loan[0]['loan_balance'];
+		$total_payments = $customer_loan[0]['total_payments']; */
+		
+		$total_balance = $payments_and_balance['loan_balance'];
+		$total_payments = $payments_and_balance['total_payments'];
+		
+		
+		$due = 0;
+		$lapses = 0;
+		$daysleft = "";
+		
+		if($mode_of_payment_id==1){
+			/*
+			 * FOR DAILY
+			 */
+				
+			
+			if($pep_status==1){
+				$date_released = $pep_startdate;
+				$maturity_date = $pep_enddate;
+				$amortization = $pep_amortization;
+				
+			}
+		}
+		
+		$result = array();
+		
+	 	foreach($loan_payments as $val){
+	 		if($pep_status==1){
+	 			$result[] = $val;
+	 		}
+	 		else{
+	 			if($val['payment_date'] > $date_released){
+	 				$result[] = $val;
+	 			}	
+	 		}
+	 		
+	 	}
+	 	//echo $amortization;die;
+		//echo"<PRE>";print_r($loan_payments);die;
+		
+		
+		//$result = $this->lp->get_payments_by_id($post['loan_id']);
+		
+		echo json_encode($result);
+	
+	}
+	
+	private function get_months($start_date, $end_date){
+		$start    = (new DateTime($start_date))->modify('first day of this month');
+		$end      = (new DateTime($end_date))->modify('first day of next month');
+		$interval = DateInterval::createFromDateString('1 month');
+		$period   = new DatePeriod($start, $interval, $end);
+		$months = array();
+		foreach ($period as $dt) {
+			if($dt->format("Y-m")<=date('Y-m'))
+				$months[] = $dt->format("Y-m");
+		}
+		
+		return $months;
+	}
+	
+	public function get_ledger(){
+		$post = $this->input->post(NULL, TRUE);
+		$this->load->model('loan_payments_model', 'lpm');
+		$this->load->model('customer_loan_model', 'clm');
+		$this->load->library('Loan');
+		
+		$customer_loan_info = $this->clm->get_by_loan_id($post['loan_id']);
+		$loan_payments = $this->lpm->get_payments_by_id($post['loan_id'], TRUE);
+		
+		$payments_and_balance =  $this->loan->get_loan_balance_and_total_payments($post['loan_id']);
+		
+		$loan_info = $customer_loan_info[0];
+		
+		$pep_status = $loan_info['pep_status'];
+		$pep_startdate = $loan_info['pep_startdate'];
+		$pep_enddate = $loan_info['pep_enddate'];
+		
+		$date_released = str_replace("-", "/", $loan_info['date_released']);
+		$date_matured = $loan_info['maturity_date'];
+		
+		$date_amort_start = date("Y-m-d", strtotime($date_released . "+1 days"));
+		$date_amort_end = $date_matured;
+		$amortization = $loan_info['amortization'];
+		
+		if($loan_info['pep_status']==1){
+			$date_amort_start = $loan_info['pep_startdate'];
+			$date_amort_end = $loan_info['pep_enddate'];
+			$amortization = $loan_info['pep_amort'];
+		}
+	
+		$months = $this->get_months($date_amort_start, $date_amort_end);
+		
+		$daily_cutoff = array();
+		foreach($this->configs as $val){
+			$daily_cutoff[$val['mode_of_payment_id']][] = $val['cutoff_day'];
+		}
+			
+		$date_day = date('d');
+		
+		$cutoffs = array();
+		$tmpcutoffdays = array();
+		$i=1;
+		$current_cutoff = "";
+		foreach($daily_cutoff[$loan_info['mopid']] as $key => $val){
+			$cutoffs = explode("-", $val);
+				
+			if(strlen($cutoffs[0])==1){
+				$cutoffs[0] = "0" . $cutoffs[0];
+			}
+			if(strlen($cutoffs[1])==1){
+				$cutoffs[1] = "0" . $cutoffs[1];
+			}
+			
+			if($cutoffs[1]!='EOM'){
+				if($date_day>=$cutoffs[0] && $date_day<=$cutoffs[1]){
+					
+						
+					$cutoff_start_date = date("Y-m-" . $cutoffs[0]);
+					$cutoff_end_date = date("Y-m-" . $cutoffs[1]);
+					if(strlen($current_cutoff)==0){
+						$current_cutoff = 'cutoff' . $i;
+					}
+				}
+				
+				
+			}
+			else{
+				if($date_day>=$cutoffs[0] && $date_day<=date('t')){
+					$cutoff_start_date = date("Y-m-" . $cutoffs[0]);
+					$cutoff_end_date = date("Y-m-t");
+					
+					if(strlen($current_cutoff)==0){
+						$current_cutoff = 'cutoff' . $i;
+					}
+				}
+				
+			}
+			
+			$tmpcutoffdays['cutoff' . $i] = $cutoffs[0] . "-" . ($cutoffs[1]=='EOM' ? 't': $cutoffs[1]);
+					
+			$i++;
+		}
+		
+		$tmpdays = "";
+		$issetcutoffdate = FALSE;
+		if(isset($post['year_month']) && isset($post['days'])){
+			$tmpdays = explode("-", $post['days']);
+			$cutoff_start_date = $post['year_month'] . "-" . $tmpdays[0];
+			$cutoff_end_date = $post['year_month'] . "-" . date($tmpdays[1], strtotime($post['year_month']));
+			$issetcutoffdate = TRUE;
+		}
+		
+		if($date_amort_end<=$cutoff_end_date){
+			$cutoff_end_date = $date_amort_end;
+		}
+		
+		if($cutoff_start_date<$date_amort_start){
+			$cutoff_start_date = $date_amort_start;
+		}
+		if($cutoff_end_date>$date_amort_end){
+			$cutoff_end_date = $date_amort_end;
+		}
+		
+		$total_payments_before_current_cutoff = 0;
+		$total_cutoff_payments = 0;
+		//echo "<pre>",print_r($loan_payments),die();
+		$total_payments = 0;
+		$loan_payments_array = array();
+		foreach($loan_payments as $key => $val){
+			if($val['payment_date']< $cutoff_start_date && $val['payment_date'] > $loan_info['date_released']){
+				if($pep_status==1){
+					if($val['payment_date']>=$pep_startdate){
+						$total_payments_before_current_cutoff += floatval($val['amount']);
+					}
+				}
+				else{
+					$total_payments_before_current_cutoff += floatval($val['amount']);
+				}
+				$total_payments += $val['amount'];
+				$loan_payments_array[$val['payment_date']] = $val['amount'];
+			}
+			elseif($val['payment_date']>=$cutoff_start_date && $val['payment_date']<=$cutoff_end_date){
+				$total_cutoff_payments += floatval($val['amount']);
+				$total_payments += $val['amount'];
+				$loan_payments_array[$val['payment_date']] = $val['amount'];
+			}
+			else{
+		
+			}
+		
+			//$total_payments += $val['amount'];
+			
+		}
+		
+		
+		$current_cutoff_payment_schedule = $this->loan->createDateRangeArray($cutoff_start_date, $cutoff_end_date);
+		
+		
+		$tmp_date_released = str_replace('-', '/', $date_amort_start);
+		$tmp_maturity_date = strtotime($date_amort_end);
+		$remaining_days = $tmp_maturity_date - strtotime(date('Y-m-d'));
+		if($loan_info['pep_status']==1){
+			$daysleft = round((($remaining_days/24)/60)/60) + 1;
+		}
+		else{
+			$daysleft = round((($remaining_days/24)/60)/60);
+		}
+		
+		
+		$due = 0;
+		$overdue = 0;
+		$payables = 0;
+		
+		$total_balance = 0;
+		$total_loan_amount = 0;
+		$cutoff_total_payment = 0;
+		$pep_startdate = "";
+		$pep_enddate = "";
+		$i=0;
+		$until_cutoff_total_payment = 0;
+		$before_cutoff_total_payment = 0;
+		$totalpayableuntilcutoff = 0;
+		
+		$loan_payments_data = array();
+		foreach($current_cutoff_payment_schedule as $val){
+			$loan_payments_data[] = array(
+					"payment_date" => $val,
+					"daily_amort" => $amortization,
+					"amount" => isset($loan_payments_array[$val]) ? $loan_payments_array[$val] : 0
+			);
+			$due += floatval($amortization);
+		}
+		
+	
+		$cutoff_start = strtotime($date_amort_start);
+		$cutoff_end = strtotime($cutoff_start_date);
+		$datediff =  $cutoff_end - $cutoff_start;
+		$cutoff_days = floor($datediff/(60*60*24));
+		
+		$total_payables_before_current_cutoff = floatval($amortization) * intval($cutoff_days);
+		
+		//echo $total_payables_before_current_cutoff . "-" . $total_payments_before_current_cutoff;die;
+		
+		$overdue = $total_payables_before_current_cutoff - $total_payments_before_current_cutoff;
+		$payables = ($due + $overdue) - $total_cutoff_payments;
+		//$total_balance = $loan_info['loan_amount'] - ($total_payments_before_current_cutoff + $total_cutoff_payments);
+		$total_balance = $payments_and_balance['loan_balance'];
+		$total_payments = $payments_and_balance['total_payments'];
+		
+		$html = "";
+		$data = array();
+		foreach($loan_payments_data as $val){
+				$html .= "<tr>";
+				$html .= "<td>";
+				$html .= $val['payment_date'];
+				$html .= "</td>";
+				$html .= "<td>";
+				$html .= $val['daily_amort'];
+				$html .= "</td>";
+				$html .= "<td>";
+				$html .= $val['amount'];
+				$html .= "</td>";
+				$html .= "</tr>";		
+		}
+	
+		$return = array(
+				"tbldata" => $html,
+				"due" => number_format($due, 2),
+				"overdue" => number_format($overdue, 2),
+				"payables" => number_format($payables, 2),
+				"balance" => number_format($total_balance, 2),
+				"totalpayments" => number_format($total_payments, 2),
+				//"mode_of_payment" => $post['mode_of_payment_id'],
+				"pep_startdate" => $pep_startdate,
+				"pep_enddate" => $pep_enddate,
+				"months" => $months,
+				"currmonth" => date("Y-m"),
+				"currcutoff" => $current_cutoff,
+				"days" => $tmpcutoffdays,
+				"remainingdays" => $daysleft . " days left"
+		);
+		
+		echo json_encode($return);
+	}
+	
+	
+	private function get_cutoff_days($cod){
+		$cutoffs = array();
+		$sd = "";
+		$ed = "";
+		$return = array();
+		foreach($cod as $key => $val){
+			$cutoffs = explode("-", $val);
+			$sd = $cutoffs[0];
+			$ed = $cutoffs[1];
+			if($ed=='EOM'){
+				$ed = "t";
+			}
+				
+			$return[] = array(
+					"sd" => $sd,
+					"ed" => $ed
+			);
+	
+		}
+		return $return;
+	}
+	
+	
+	public function get_payment_details(){
+		$post = $this->input->post(NULL, TRUE);
+		$this->load->model('loan_amort_dates_model', 'lad');
+		$this->load->model('customer_loan_model', 'clm');
+		$this->load->model('loan_payments_model', 'lpm');
+		$this->load->library('Loan');
+		
+		$daily_cutoff = array();
+		foreach($this->configs as $val){
+			$daily_cutoff[$val['mode_of_payment_id']][] = $val['cutoff_day'];
+		}
+			
+		$date_day = date('d');
+		
+		
+		
+		$cutoffs = array();
+		/*
+		 * get cutoff start and end date
+		 */
+		foreach($daily_cutoff[$post['mode_of_payment_id']] as $key => $val){
+			$cutoffs = explode("-", $val);
+			
+			if($cutoffs[1]!='EOM'){
+				if($date_day>=$cutoffs[0] && $date_day<=$cutoffs[1]){
+					if(strlen($cutoffs[0])==1){
+						$cutoffs[0] = "0" . $cutoffs[0];
+					}
+					if(strlen($cutoffs[1])==1){
+						$cutoffs[1] = "0" . $cutoffs[1];
+					}	
+					
+					$cutoff_start_date = date("Y-m-" . $cutoffs[0]);
+					$cutoff_end_date = date("Y-m-" . $cutoffs[1]);
+					break;
+				}
+			}
+			else{
+				if($date_day>=$cutoffs[0] && $date_day<=date('t')){
+					$cutoff_start_date = date("Y-m-" . $cutoffs[0]);
+					$cutoff_end_date = date("Y-m-t");
+					break;
+				}
+			}
+			
+		}
+		
+		
+		
+		$cod = $this->get_cutoff_days($daily_cutoff[$post['mode_of_payment_id']]);
+		
+		//echo "<pre>";print_r($cod);die;
+		
+		$customer_loan = $this->clm->get_by_loan_id($post['loan_id']);
+		$loan_payments = $this->lpm->get_payments_by_id($post['loan_id'], TRUE);
+		
+		$mode_of_payment_id = $customer_loan[0]['mopid'];
+		$total_loan_amount = $customer_loan[0]['loan_amount'];
+		$date_released = $customer_loan[0]['date_released'];
+		$maturity_date = $customer_loan[0]['maturity_date'];
+		$amortization = $customer_loan[0]['amortization'];
+		$pep_status = $customer_loan[0]['pep_status'];
+		$pep_startdate = $customer_loan[0]['pep_startdate'] != "0000-00-00" ? $customer_loan[0]['pep_startdate'] : "";
+		$pep_enddate = $customer_loan[0]['pep_enddate'] != "0000-00-00" ? $customer_loan[0]['pep_enddate'] : "";
+		$pep_amortization = $customer_loan[0]['pep_amort'];
+		$loan_term_duration = $customer_loan[0]['loan_term_duration'];
+		//$total_balance = $customer_loan[0]['loan_balance'];
+		//$total_payments = $customer_loan[0]['total_payments'];
+		$due = 0;
+		$lapses = 0;
+		$daysleft = "";
+		
+		
+		
+		if($mode_of_payment_id==1){
+			/*
+			 * FOR DAILY
+			 */
+			
+			/* if($maturity_date<=$cutoff_end_date){
+				$cutoff_end_date = $maturity_date;
+			} */	
+			
+			if($pep_status==1){
+				$date_released = $pep_startdate;
+				$maturity_date = $pep_enddate;
+				$amortization = $pep_amortization;
+			
+			}
+			
+			
+			
+			
+			$tmp_date_released = str_replace('-', '/', $date_released);
+			$tmp_maturity_date = strtotime($maturity_date);
+			$remaining_days = $tmp_maturity_date - strtotime(date('Y-m-d'));
+			if($pep_status==1){
+				$daysleft = round((($remaining_days/24)/60)/60) + 1;
+				$amort_day_start = date('Y-m-d', strtotime($tmp_date_released));
+			}
+			else{
+				$daysleft = round((($remaining_days/24)/60)/60);
+				$amort_day_start = date('Y-m-d', strtotime($tmp_date_released . "+1 days"));
+			}
+			
+			if($cutoff_start_date<$amort_day_start){
+				$cutoff_start_date = $amort_day_start;
+			}
+			
+			$current_cutoff_payment_schedule = $this->loan->createDateRangeArray($cutoff_start_date, $cutoff_end_date);
+			/*
+			 * calculate number of days between cutoff dates
+			 *
+			 */
+			$cutoff_start = strtotime($cutoff_start_date);
+			$cutoff_end = strtotime($cutoff_end_date);
+			
+			
+			//echo "<pre>";print_r($current_cutoff_payment_schedule);die;
+			
+			$datediff =  $cutoff_end - $cutoff_start;
+			//echo $datediff;die;
+			if($maturity_date < $cutoff_end_date){
+				$cutoff_end = strtotime($maturity_date);
+				$datediff =  $cutoff_end - $cutoff_start;
+			}
+			
+			$date1=date_create($cutoff_start_date);
+			$date2=date_create($cutoff_end_date);
+			$diff=date_diff($date1,$date2);
+
+
+			//$cutoff_days = floor($datediff/(60*60*24)) + 1;
+			$cutoff_days = intval($diff->format("%R%a")) + 1;
+			/* echo $datediff . "<br>";
+			echo $cutoff_days;
+			die; */
+			
+			/*
+			 * calculate due
+			 */
+			
+			$payments =  $this->loan->get_loan_balance_and_total_payments($post['loan_id']);
+			
+			//echo "<pre>";print_r($payments);die;
+			
+			
+
+			$due = intval($cutoff_days) * floatval($amortization);
+			
+			/* echo intval($cutoff_days);
+			echo floatval($amortization);
+			echo $due;die; */
+			/*
+			 * calculate total payables until cutoff
+			 */
+			$totalpayableuntilcutoff = 0;
+			$tmp_amort_day_start = strtotime($amort_day_start);
+
+
+			$date1=date_create($amort_day_start);
+			$date2=date_create($cutoff_start_date);
+			$diff=date_diff($date1,$date2);
+
+			$datediff1 = intval($diff->format("%R%a"));
+
+			//$datediff1 =  $cutoff_start - $tmp_amort_day_start;
+			//$num_of_days_from_start_before_cutoff =  floor($datediff1/(60*60*24));
+			$num_of_days_from_start_before_cutoff =  $datediff1;
+
+			$total_payables_before_cutoff = intval($num_of_days_from_start_before_cutoff) * floatval($amortization);
+			/*
+			 * get total payments before current cutoff start
+			 */
+			//echo $cutoff_start_date . "<br>" . $date_released;die;
+			
+			$total_payments_before_current_cutoff = 0;
+			$total_cutoff_payments = 0;
+			$overdue = 0;
+			$loan_payments_array = array();
+			$total_payments = 0;
+			if($pep_status==1){
+				$comparison = '>=';
+			}
+			else{
+				$comparison = '>';	
+			}
+			foreach($loan_payments as $key => $val){
+				if($val['approved']==1){
+					if($val['payment_date']< $cutoff_start_date  && $val['payment_date']  .$comparison. $date_released){
+						if($pep_status==1){
+							if($val['payment_date']>=$pep_startdate){
+								$total_payments_before_current_cutoff += floatval($val['amount']);
+							}
+						}
+						else{
+							$total_payments_before_current_cutoff += floatval($val['amount']);
+						}
+						
+						//$total_payments += $val['amount'];
+						$loan_payments_array[$val['payment_date']] = $val['amount'];
+					}
+					elseif($val['payment_date']>=$cutoff_start_date && $val['payment_date']<=$cutoff_end_date){
+						$total_cutoff_payments += floatval($val['amount']);
+						
+						//$total_payments += $val['amount'];
+						$loan_payments_array[$val['payment_date']] = $val['amount'];
+					}
+					else{
+						if($pep_status==1){
+							//$total_payments = $payments['total_payments'];
+						}
+					}
+					
+					
+				}
+				
+			}
+			
+			$total_payments = $payments['total_payments'];
+			$total_balance = $payments['loan_balance'];
+			//$total_balance = $customer_loan[0]['loan_amount'] - $total_payments;
+			/* echo $payments['total_payments'] . "==";
+			echo $total_payments . "==";
+			echo $total_balance;die; */
+			
+			############## COMPUTE LAPSES ###############
+			$payment_schdules = $this->loan->createDateRangeArray($amort_day_start, $maturity_date);
+			//$schedule_with_payments_array = array();
+			//echo "<pre>";print_r($payment_schdules);die();
+			$total_amort = 0;
+			$total_paid_amort = 0;
+			foreach($payment_schdules as $val){
+				//if($val < date('Y-m-d')){
+				if($val < date('Y-m-d')){
+					
+					if($val<=$maturity_date){
+						$total_amort += $amortization;
+					}
+					
+					
+					if(isset($loan_payments_array[$val])){
+						if($loan_payments_array[$val]<$amortization){
+							//$lapses++;
+						}
+						$total_paid_amort += $loan_payments_array[$val];
+					}
+					else{
+							//$lapses++;
+					}
+					
+					//$schedule_with_payments_array[$val] = isset($loan_payments_array[$val]) ? $loan_payments_array[$val] : 0;
+					
+					if($total_paid_amort-$total_amort < 0){
+						$lapses++;
+					}
+					
+					
+					//echo $total_amort . "++++" . $total_paid_amort . "====" . $lapses . "\n";
+				}
+				
+					
+			}
+			///echo $total_paid_amort . "==" .  $total_amort;die;
+			//die;
+			//print_r($cod);die;
+			
+			
+			$od_count_array = array();
+			//echo"<PRE>";print_r($cod);die;
+			
+			//echo"<PRE>";print_r($payment_schdules);die;
+			
+			foreach($payment_schdules as $val){
+				if($val < date('Y-m-d')){
+					$tp = 0;
+					$ta = 0;
+					foreach($cod as $k => $d){
+						if(strlen($d['sd'])==1){
+							$d['sd'] = "0" . $d['sd'];
+						}
+						if($d['ed']=='t'){
+							$d['ed']= date('t', strtotime($val));
+						}
+						
+						if(date('d', strtotime($val))>=intval($d['sd']) && date('d', strtotime($val))<=intval($d['ed'])){
+							$ta+=$amortization;
+							$tp+=isset($loan_payments_array[$val])?$loan_payments_array[$val]:0;
+							$od_count_array[date('Y-m-' . $d['ed'], strtotime($val))][] = array(
+									"tp"=> $tp,
+									"ta" => $ta
+							);
+						}
+			
+					}
+						
+				}
+			
+				/* if($tp<$ta){
+					$od_counter++;
+				} */
+			}
+			//echo"<PRE>";print_r($od_count_array);die;
+			$od_counter = 0;
+			$overpayments = array();
+			$tmpkey = 0;
+			foreach($od_count_array as $key => $val){
+				$temp_amort_total = 0;
+				$temp_payment_total = 0;
+				
+				
+				foreach($val as $k => $v){
+					if($key < date('Y-m-d')){
+						$temp_amort_total += $v['ta'];
+						$temp_payment_total += $v['tp'];
+					}
+					
+				}
+				
+				if(isset($overpayments[$tmpkey-1]) && $overpayments[$tmpkey-1]>0){
+					$temp_payment_total+=$overpayments[$tmpkey-1];
+				}
+				
+				if($temp_payment_total>$temp_amort_total){
+					$overpayments[$tmpkey] = $temp_payment_total - $temp_amort_total;
+				}
+				
+				if($temp_payment_total<$temp_amort_total){
+					/*if(isset($overpayments[$tmpkey-1]) && $overpayments[$tmpkey-1]>0){
+						$temp_payment_total += $overpayments[$tmpkey-1];
+					}*/
+					
+					if($temp_payment_total<$temp_amort_total)
+						$od_counter++;
+				}
+					
+				
+				$tmpkey++;
+				//echo $temp_amort_total . "====" . $temp_payment_total . "<br>";
+			}
+			//echo $od_counter;die;
+			//echo"<PRE>",print_r($od_count_array);die;	
+			//echo floatval($total_payables_before_cutoff) . "-" . floatval($total_payments_before_current_cutoff);die;
+			/* echo $total_payables_before_cutoff . "<br>";
+			echo  $num_of_days_from_start_before_cutoff . "<br>";
+			echo $total_payments_before_current_cutoff;
+			die; */
+			
+			$overdue = floatval($total_payables_before_cutoff) - floatval($total_payments_before_current_cutoff);
+			$payables = ($due + $overdue) - $total_cutoff_payments;
+
+			
+			
+			
+			if($maturity_date <= date('Y-m-d')){
+				if($cutoff_start_date > $maturity_date){
+					$overdue = $payments['loan_balance'];
+					$payables = $payments['loan_balance'];
+					$due = 0;
+				}
+				
+				
+			}
+			
+			/* echo $cutoff_start_date . "==";
+			echo $maturity_date;die; */
+			
+			//echo $overdue;die;
+			/* if($total_balance<$amortization){
+				$amortization = $total_balance;
+			} */
+			
+			$tmp_amortization = 0;
+			$loan_payments_data = array();
+			foreach($current_cutoff_payment_schedule as $val){
+				$tmp_amortization += $amortization;
+				
+				if($tmp_amortization>=$total_balance){
+					//$amortization = $total_balance;
+				}
+				
+				
+				$loan_payments_data[] = array(
+						"payment_date" => $val,
+						"daily_amort" => $amortization,
+						"amount" => isset($loan_payments_array[$val]) ? $loan_payments_array[$val] : 0
+				);
+			}
+		}
+		elseif($mode_of_payment_id==2){
+			/*
+			 * 
+			 * FOR SEMI-MONTHLY
+			 */
+			
+			$current_cutoff_payment_schedule = $this->loan->createSemiMontlySched($date_released, $loan_term_duration);
+			$total_payments_before_current_cutoff = 0;
+			$total_cutoff_payments = 0;
+			$key_payment_date = "";
+			$loan_payments_array = array();
+			foreach($loan_payments as $key => $val){
+				if($val['payment_date']< $cutoff_start_date){
+					$total_payments_before_current_cutoff += floatval($val['amount']);
+			
+				}
+				elseif($val['payment_date']>=$cutoff_start_date && $val['payment_date']<=$cutoff_end_date){
+					$total_cutoff_payments += floatval($val['amount']);
+				}
+				else{
+			
+				}
+			
+				if(date('d', strtotime($val['payment_date'])) <=15){
+					$loan_payments_array[date('Y-m-15')] = $val['amount'];
+				}
+				else{
+					$loan_payments_array[date('Y-m-t', strtotime($val['payment_date']))] = $val['amount'];
+				}
+				
+			}
+			
+			if(date('d', strtotime($cutoff_start_date))<=15){
+				$cutoff_start_date = date('Y-m-15', strtotime($cutoff_start_date));
+			}
+			else{
+				$cutoff_start_date = date('Y-m-t', strtotime($cutoff_start_date));
+			}
+			
+			$loan_payments_data = array();
+			$total_payables_before_cutoff = 0;
+			
+			foreach($current_cutoff_payment_schedule as $val){
+				
+				if($val<$cutoff_start_date){
+				
+					$total_payables_before_cutoff += $amortization;
+				}
+				
+				$loan_payments_data[] = array(
+						"payment_date" => $val,
+						"daily_amort" => $amortization,
+						"amount" => isset($loan_payments_array[$val]) ? $loan_payments_array[$val] : 0
+				);
+			}
+			
+			$due = floatval($amortization);
+			$overdue = floatval($total_payables_before_cutoff) - floatval($total_payments_before_current_cutoff);
+			$payables = ($due + $overdue) - $total_cutoff_payments;
+			
+		}
+		elseif($mode_of_payment_id==3){
+			/*
+			 * FOR MONTHLY
+			 */
+
+			$current_cutoff_payment_schedule = $this->loan->createMontlySched($date_released, $maturity_date);
+
+			$total_payments_before_current_cutoff = 0;
+			$total_cutoff_payments = 0;
+			$key_payment_date = "";
+			$loan_payments_array = array();
+			$cutoff_start_date = date('Y-m-1', strtotime($cutoff_start_date));
+			$cutoff_end_date = date('Y-m-t', strtotime($cutoff_start_date));
+			foreach($loan_payments as $key => $val){
+				if($val['payment_date']< $cutoff_start_date){
+					$total_payments_before_current_cutoff += floatval($val['amount']);
+						
+				}
+				elseif($val['payment_date']>=$cutoff_start_date && $val['payment_date']<=$cutoff_end_date){
+					$total_cutoff_payments += floatval($val['amount']);
+				}
+				else{
+						
+				}
+				
+				$loan_payments_array[date('Y-m-t', strtotime($val['payment_date']))] = $val['amount'];
+			
+			}
+			
+			$loan_payments_data = array();
+			$total_payables_before_cutoff = 0;
+			
+			
+			$tmpamort = 0;
+			$diff = 0;
+			
+			$tmp_amort = 0;
+			//echo "<pre>";print_r($current_cutoff_payment_schedule);die;
+			foreach($current_cutoff_payment_schedule as $val){
+				
+				$tmpamort+=$amortization;
+				if($tmpamort>$total_loan_amount){
+					$diff = $tmpamort - $total_loan_amount;
+					$amortization = $amortization - $diff;
+				}
+				
+				
+				
+				if($val<$cutoff_start_date){
+					$total_payables_before_cutoff += $amortization;
+				}
+			
+				$loan_payments_data[] = array(
+						"payment_date" => $val,
+						"daily_amort" => number_format($amortization, 2),
+						"amount" => isset($loan_payments_array[$val]) ? $loan_payments_array[$val] : 0
+				);
+				
+				if (date('m') == date('m', strtotime($val))){
+					$due = floatval($amortization);
+				}
+			}
+				
+			
+			$overdue = floatval($total_payables_before_cutoff) - floatval($total_payments_before_current_cutoff);
+			$payables = ($due + $overdue) - $total_cutoff_payments;
+			
+		}
+		
+		//echo "<pre>";print_r($loan_payments_data);die;
+		
+		$data = array();
+		foreach($loan_payments_data as $val){
+				
+			$row = array();
+				
+			foreach($val as $k => $v){
+				$row[] = $v;
+			}
+				
+			$data[] = $row;
+		}
+		
+		$lapse = "";
+		if(intval($lapses)>=0 && intval($lapses)<=10){
+			$lapse .= '<button type="button" class="btn btn-success btn-xs"><span class="badge">EP</span> - '.$lapses.' days</button>';
+			
+		}
+		elseif(intval($lapses)>10 && intval($lapses)<22){
+			$lapse .= '<button type="button" class="btn btn-warning btn-xs"><span class="badge">GP</span> - '.$lapses.' days</button>';
+			
+		}
+		else{
+			$lapse .= '<button type="button" class="btn btn-danger btn-xs"><span class="badge">SP</span> - '.$lapses.' days</button>';
+			
+		}
+		
+		//$od_counter = 0;
+		//echo"<PRE>";print_r($current_cutoff_payment_schedule);die;
+		
+		
+		$return = array(
+				"sEcho" => count($data),
+				"iTotalRecords" => count($data),
+				"iTotalDisplayRecords" =>  count($data),
+				"aaData" => $data,
+				"due" => number_format($due, 2),
+				"overdue" => number_format($overdue, 2),
+				"payables" => number_format($payables, 2),
+				"balance" => number_format($total_balance, 2),
+				"totalpayments" => number_format($total_payments, 2),
+				"mode_of_payment" => $post['mode_of_payment_id'],
+				"pep_startdate" => $pep_startdate,
+				"pep_enddate" => $pep_enddate,
+				"daysleft" => $daysleft,
+				"lapses" => $lapse,
+				"odcounter" => $post['mode_of_payment_id']==1 ? $od_counter : ""
+		);
+		
+		
+		echo json_encode($return);
+	}
+	
+	public function get_loan_terms(){
+		$post = $this->input->post(NULL, TRUE);
+		
+		if(isset($post['mode_of_payment_id']) && $post['mode_of_payment_id']!=""){
+			$this->db->where('mode_of_payment_id', $post['mode_of_payment_id']);
+			$query = $this->db->get('loan_term');
+			$result = $query->result_array();
+			
+			$html = "";
+			
+			foreach($result as $val){
+				$html .= "<option value='".$val['id']."'>".$val['payment_term']."</option>";
+			}
+			
+			echo $html;
+		}
+		
+		if(isset($post['loan_term_id']) && $post['loan_term_id']!=""){
+			$this->db->where('id', $post['loan_term_id']);
+			$query = $this->db->get('loan_term');
+			$result = $query->result_array();
+				
+			$return = array(
+					"term_pct" => $result[0]['term_pct'],
+					"term_duration" => $result[0]['term_duration']
+			);
+			
+				
+			echo json_encode($return);
+		}
+		
+		
+	}
+	
+	public function get_payment_mode(){
+		$query = $this->db->get('mode_of_payment');
+		$result = $query->result_array();
+		
+		$html = "";
+		foreach($result as $val){
+			$html .= "<option value='".$val['id']."'>".$val['name']."</option>";
+		}
+		return $html;
+		
+	}
+	
+	public function check_customer_loan(){
+		$post = $this->input->post(NULL, TRUE);
+		$this->load->model('customer_loan_model', 'clm');
+		
+		$data = $this->clm->check_customer_loan($post['id']);
+		
+		echo json_encode(array(
+			"success" => TRUE,
+			"data" => $data,
+			"datacount" => count($data) 	
+		));
+	}
+	
+	public function apply_pep(){
+		$post = $this->input->post(NULL, TRUE);
+		
+		$this->load->model('loan_amort_dates_model', 'lad');
+		$this->load->model('loan_payments_model', 'lpm');
+		$this->load->model('customer_loan_model', 'clm');
+		
+		$loan_payments = $this->lpm->get_payments_by_id($post['loan_id'], TRUE);
+		$loan_details = $this->clm->get_by_id($post['customer_id']);
+		
+		$loan_amount = $loan_details[0]['loan_amount'];
+		
+		$total_loan_payments = 0;
+		foreach($loan_payments as $val){
+			$total_loan_payments += $val['amount'];
+		}
+		
+		$remaining_balance = $loan_amount - $total_loan_payments;
+		
+		$tmpdate = str_replace('-', '/', $post['pep_start_date']);
+		$end_date = date('Y-m-d', strtotime($tmpdate . "+99 days"));
+		$daily_amort = $remaining_balance/100;
+
+		$this->clm->id = $post['loan_id'];
+		$this->clm->data = array(
+				"is_pep" => "1",
+				"pep_startdate" => $post['pep_start_date'],
+				"pep_enddate" => $end_date,
+				"pep_amort" => $daily_amort
+		);
+		$this->clm->update();
+		
+		$response = array(
+				'success' => TRUE
+		);
+		
+		echo json_encode($response);
+	}
+	
+	function generate_soa(){
+		$this->load->helper(array('dompdf', 'file'));
+		
+		$this->load->model('loan_payments_model', 'lpm');
+		$this->load->model('customer_loan_model', 'clm');
+		$post = $this->input->post(NULL, TRUE);
+		
+		
+		
+		
+		$customer_loan = $this->clm->get_by_loan_id($post['soa_loan_id']);
+		$loan_payments = $this->lpm->get_payments_by_id($post['soa_loan_id'], TRUE);
+		
+		$mode_of_payment_id = $customer_loan[0]['mopid'];
+		$total_loan_amount = $customer_loan[0]['loan_amount'];
+		$date_released = $customer_loan[0]['date_released'];
+		$maturity_date = $customer_loan[0]['maturity_date'];
+		$amortization = $customer_loan[0]['amortization'];
+		$pep_status = $customer_loan[0]['pep_status'];
+		$pep_startdate = $customer_loan[0]['pep_startdate'] != "0000-00-00" ? $customer_loan[0]['pep_startdate'] : "";
+		$pep_enddate = $customer_loan[0]['pep_enddate'] != "0000-00-00" ? $customer_loan[0]['pep_enddate'] : "";
+		$pep_amortization = $customer_loan[0]['pep_amort'];
+		$loan_term_duration = $customer_loan[0]['loan_term_duration'];
+		$total_balance = $customer_loan[0]['loan_balance'];
+		$total_payments = $customer_loan[0]['total_payments'];
+		$due = 0;
+		$lapses = 0;
+		$daysleft = "";
+		
+		if($mode_of_payment_id==1){
+			/*
+			 * FOR DAILY
+			 */
+		
+				
+			if($pep_status==1){
+				$date_released = $pep_startdate;
+				$maturity_date = $pep_enddate;
+				$amortization = $pep_amortization;
+					
+			}
+		}
+		
+		$result = array();
+		
+		foreach($loan_payments as $val){
+			if($val['payment_date'] > $date_released){
+				$result[] = $val;
+			}
+		}
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		/* $loan_payments = $this->lp->get_payments_by_id($post['soa_loan_id']);
+		$customer_loan = $this->cl->get_by_loan_id($post['soa_loan_id']);
+		
+		if(! empty($customer_loan)){
+			$loan_amount = $customer_loan[0]['loan_amount'];
+		}
+		 */
+		$outstanding_balance = 0;
+		$total_payments = 0;
+		foreach($result as $val){
+			$total_payments += $val['amount'];
+		}
+		
+		$outstanding_balance = floatval($customer_loan[0]['loan_amount']) - floatval($total_payments);
+		$this->data = array(
+			"loan_details" => $customer_loan,
+			"loan_payments" => $loan_payments,
+			"outstanding_balance" => $outstanding_balance,
+			"total_payments" => $total_payments
+		);
+	
+		
+		$html = $this->load->view('page/soa', $this->data, true);
+		pdf_create($html, 'soa');
+		/* or
+		 $data = pdf_create($html, '', false);
+		 write_file('name', $data);
+		 //if you want to write it to disk and/or send it as an attachment */
+	}
+}
+
+/* End of file customer.php */
+/* Location: ./application/controllers/customer.php */

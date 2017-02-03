@@ -1,0 +1,18 @@
+.icheckbox_minimal{
+	vertical-align: inherit
+}
+.modal-dialog{
+	width: 812px;
+}
+
+.selected{
+	background-color: yellow;
+}
+
+.loan_info{
+	font-weight: bold;
+}
+
+.voucher_data{
+	text-decoration: underline;
+}

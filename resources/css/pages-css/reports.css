@@ -1,0 +1,8 @@
+td.right{
+	text-align: right;
+}
+.dataTables_scroll
+{
+    overflow:auto;
+}
+
